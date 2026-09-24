@@ -1,3 +1,4 @@
+//ESP 32 (2) now calculates the motor speed itself
 #include <WiFi.h>
 #include <esp_now.h>
 
