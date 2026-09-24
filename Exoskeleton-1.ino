@@ -5,12 +5,19 @@
 const int MPU_ADDR_A = 0x68; // AD0 -> GND
 const int MPU_ADDR_B = 0x69; // AD0 -> 3.3V
 
-const int RISE_THRESHOLD = 50;
-const int SPIKE_LIMIT    = 4000;
+// Filtering
+const float EMA_ALPHA = 0.25;
 
-const int MEAN_SAMPLES   = 5;
+// Rising detection
+const int RISE_THRESHOLD = 50;
+
+// Spike rejection
+const int SPIKE_LIMIT = 4000;
+
+// Debouncing
 const int DEBOUNCE_COUNT = 3;
 
+// Motor speed
 const int MAX_TILT  = 16000;
 const int MIN_SPEED = 300;
 const int MAX_SPEED = 1023;
@@ -26,28 +33,42 @@ typedef struct {
 
 LegData outgoing;
 
+
 struct SensorLeg {
+
   int mpuAddr;
   int baseline;
 
-  int samples[MEAN_SAMPLES];
-  int sampleIndex;
-  bool bufferFull;
+  // EMA
+  float smoothed;
 
+  // Previous filtered tilt
   int prevTilt;
+
+  // Rising debounce counter
   int riseCount;
 
   const char* name;
 };
 
+
 SensorLeg legA = {
-  MPU_ADDR_A, 0, {0}, 0, false, 0, 0, "A"
+  MPU_ADDR_A,
+  0,
+  0,
+  0,
+  0,
+  "A"
 };
 
 SensorLeg legB = {
-  MPU_ADDR_B, 0, {0}, 0, false, 0, 0, "B"
+  MPU_ADDR_B,
+  0,
+  0,
+  0,
+  0,
+  "B"
 };
-
 
 void setup() {
 
@@ -78,7 +99,6 @@ void setup() {
   esp_now_add_peer(&peer);
 }
 
-
 void loop() {
 
   outgoing.speedA = readSpeed(legA);
@@ -99,7 +119,6 @@ void loop() {
   delay(50);
 }
 
-
 void wakeMPU(int addr) {
 
   Wire.beginTransmission(addr);
@@ -109,7 +128,6 @@ void wakeMPU(int addr) {
 
   Wire.endTransmission(true);
 }
-
 
 void calibrate(SensorLeg &leg) {
 
@@ -131,49 +149,33 @@ void calibrate(SensorLeg &leg) {
   Serial.println(leg.baseline);
 }
 
-
 int readSpeed(SensorLeg &leg) {
 
-  int raw = readAccelX(leg.mpuAddr) - leg.baseline;
+  int raw =
+    readAccelX(leg.mpuAddr) - leg.baseline;
 
-  leg.samples[leg.sampleIndex] = raw;
+  leg.smoothed =
+    (EMA_ALPHA * raw) +
+    ((1.0 - EMA_ALPHA) * leg.smoothed);
 
-  leg.sampleIndex++;
-
-  if (leg.sampleIndex >= MEAN_SAMPLES) {
-
-    leg.sampleIndex = 0;
-    leg.bufferFull = true;
-  }
-
-  long sum = 0;
-
-  int numberOfSamples =
-    leg.bufferFull ? MEAN_SAMPLES : leg.sampleIndex;
-
-  if (numberOfSamples == 0)
-    numberOfSamples = 1;
-
-  for (int i = 0; i < numberOfSamples; i++) {
-
-    sum += leg.samples[i];
-  }
-
-  int tilt = sum / numberOfSamples;
+  int tilt = (int)leg.smoothed;
 
   if (abs(tilt - leg.prevTilt) > SPIKE_LIMIT) {
 
+    // Ignore the abnormal reading
     leg.riseCount = 0;
 
     return 0;
   }
 
-  int change = tilt - leg.prevTilt;
 
-  bool candidate =
+  int change =
+    tilt - leg.prevTilt;
+
+  bool rising =
     (change > RISE_THRESHOLD);
 
-  if (candidate) {
+  if (rising) {
 
     leg.riseCount++;
 
@@ -183,21 +185,25 @@ int readSpeed(SensorLeg &leg) {
   }
 
 
-  bool rising =
+  bool confirmedRising =
     (leg.riseCount >= DEBOUNCE_COUNT);
 
-  if (!rising) {
+  leg.prevTilt = tilt;
+
+  if (!confirmedRising) {
 
     return 0;
   }
 
-  int speed = map(
-    tilt,
-    0,
-    MAX_TILT,
-    MIN_SPEED,
-    MAX_SPEED
-  );
+
+  int speed =
+    map(
+      tilt,
+      0,
+      MAX_TILT,
+      MIN_SPEED,
+      MAX_SPEED
+    );
 
 
   return constrain(
@@ -230,3 +236,4 @@ int readAccelX(int addr) {
 
   return x;
 }
+
